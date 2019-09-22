@@ -34,7 +34,7 @@ end
 Transition(model::DensityModel, θ::T) where T = Transition(θ, ℓπ(model, θ))
 
 # Tell the interface what transition type we would like to use.
-transition_type(spl::MetropolisHastings) = Transition
+transition_type(model::DensityModel, spl::MetropolisHastings) = typeof(Transition(spl.init_θ, ℓπ(model, spl.init_θ)))
 
 # Define a function that makes a basic proposal depending on a univariate
 # parameterization or a multivariate parameterization.
@@ -48,9 +48,8 @@ q(spl::MetropolisHastings, θ1::Vector{<:Real}, θ2::Vector{<:Real}) = logpdf(Mv
 q(spl::MetropolisHastings, t1::Transition, t2::Transition) = q(spl, t1.θ, t2.θ)
 
 # Calculate the density of the model given some parameterization.
-ℓπ(model::DensityModel, θ::Vector{<:Real}) = model.π(model.data, θ)
-ℓπ(model::DensityModel, θ::Real) = model.π(model.data, θ)
-ℓπ(model::DensityModel, t::Transition) = ℓπ(model, t.θ)
+ℓπ(model::DensityModel, θ::T) where T = model.π(model.data, θ)
+ℓπ(model::DensityModel, t::Transition) = t.lp
 
 # Define the first step! function, which is called at the 
 # beginning of sampling. Return the initial parameter used
@@ -90,7 +89,7 @@ function step!(
     α = ℓπ(model, θ) - ℓπ(model, θ_prev) + q(spl, θ_prev, θ) - q(spl, θ, θ_prev)
 
     # Decide whether to return the previous θ or the new one.
-    if log(rand()) < min(α, 1.0)
+    if log(rand()) < min(α, 0.0)
         return θ
     else
         return θ_prev
@@ -107,12 +106,18 @@ function Chains(
     param_names=missing,
     kwargs...
 ) where {T <: Transition}
+    # Turn all the transitions into a vector-of-vectors.
     vals = [vcat(t.θ, t.lp) for t in ts]
+
+    # Check if we received any parameter names.
     if ismissing(param_names)
         param_names = ["Parameter $i" for i in 1:(length(first(vals))-1)]
     end
 
+    # Add the log density field to the parameter names.
     push!(param_names, "lp")
+
+    # Bundle everything up and return a Chains struct.
     return Chains(vals, param_names, (internals=["lp"],))
 end
 
