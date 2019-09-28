@@ -43,8 +43,8 @@ proposal(spl::MetropolisHastings, model::DensityModel, θ::Vector{<:Real}) = Tra
 proposal(spl::MetropolisHastings, model::DensityModel, t::Transition) = proposal(spl, model, t.θ)
 
 # Calculate the logpdf of one proposal given another proposal.
-q(spl::MetropolisHastings, θ1::Real, θ2::Real) = logpdf(Normal(θ2, 1.0), θ2)
-q(spl::MetropolisHastings, θ1::Vector{<:Real}, θ2::Vector{<:Real}) = logpdf(MvNormal(θ2, 1.0), θ2)
+q(spl::MetropolisHastings, θ1::Real, θ2::Real) = logpdf(Normal(θ1, 1.0), θ2)
+q(spl::MetropolisHastings, θ1::Vector{<:Real}, θ2::Vector{<:Real}) = logpdf(MvNormal(θ1, 1.0), θ2)
 q(spl::MetropolisHastings, t1::Transition, t2::Transition) = q(spl, t1.θ, t2.θ)
 
 # Calculate the density of the model given some parameterization.
@@ -123,7 +123,7 @@ end
 
 # Define the components of a basic model.
 insupport(θ) = θ[2] >= 0
-dist(θ) = Normal(θ[1], θ[2])
+dist(θ) = Normal(θ[1], sqrt(θ[2]))
 density(data, θ) = insupport(θ) ? sum(logpdf.(dist(θ), data)) : -Inf
 
 # Generate a set of data from the posterior we want to estimate.

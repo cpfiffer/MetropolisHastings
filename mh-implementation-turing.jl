@@ -2,20 +2,27 @@
 using Turing
 using Turing.Interface
 using Distributions
-using Random
 
 # Import specific functions and types to use or overload.
 import Distributions: VariateForm, ValueSupport, variate_form, value_support, Sampleable, insupport
 import MCMCChains: Chains
-import Turing: Model, Sampler
+import Turing: Model, Sampler, Selector
 import Turing.Interface: step!, AbstractTransition, transition_type
 import Turing.Inference: InferenceAlgorithm, AbstractSamplerState, Transition, parameters!, 
-                         getspace, assume, observe
-import Turing.RandomVariables: VarInfo, runmodel!, VarName, link!, invlink!
+                         getspace, assume, parameter
+import Turing.RandomVariables: VarInfo, VarName, variables
 
 # Define an InferenceAlgorithm type.
-struct MetropolisHastings{space} <: InferenceAlgorithm end
-MetropolisHastings(space=Tuple{}()) = MetropolisHastings{space}()
+struct MetropolisHastings{space} <: InferenceAlgorithm 
+    proposal :: Function
+end
+
+# Default constructors.
+MetropolisHastings(space=Tuple{}()) = MetropolisHastings{space}(x -> Normal(x, 1))
+MetropolisHastings(f::Function) = MetropolisHastings{space}(f)
+
+# These functions are required for your sampler to function with Turing,
+# and they return the variables that a sampler has ownership of.
 getspace(::MetropolisHastings{space}) where {space} = space
 getspace(::Type{<:MetropolisHastings{space}}) where {space} = space
 
@@ -26,17 +33,33 @@ function transition_type(model::Model, spl::Sampler{<:MetropolisHastings})
     return typeof(Transition(spl))
 end
 
-# Define a function that makes a basic proposal.
+# Define a function that makes a basic proposal. This function runs the model and
+# bundles the results up. In this case, the actual proposal occurs during
+# the assume function.
 function proposal(spl::Sampler{<:MetropolisHastings}, model::Model, t::Transition)
-    d = MvNormal(parameters!(spl, t), 1)
-    return Transition(model, spl, rand(d))
+    return Transition(model, spl, parameters!(spl, t))
 end
 
-# Calculate the logpdf of one proposal given another proposal.
-q(spl::Sampler{<:MetropolisHastings}, θ1::Real, θ2::Real) = logpdf(Normal(θ2, 1.0), θ2)
-q(spl::Sampler{<:MetropolisHastings}, θ1::Vector{<:Real}, θ2::Vector{<:Real}) = logpdf(MvNormal(θ2, 1.0), θ2)
+# Calculate the logpdf ratio of one proposal given another proposal.
 function q(spl::Sampler{<:MetropolisHastings}, t1::Transition, t2::Transition)
-    return q(spl, parameters!(spl, t1), parameters!(spl, t2))
+    # Preallocate the ratio.
+    ratio = 0.0
+
+    # Iterate through each variable in the sampler.
+    for vn in variables(spl)
+        # Get the parameter from the Transition and the distribution 
+        # associated with each variable.
+        p1 = parameter(t1, vn)
+        d1 = spl.alg.proposal(p1)
+
+        p2 = parameter(t2, vn)
+        d2 = spl.alg.proposal(p2)
+
+        # Increment the log ratio.
+        ratio += logpdf(d2, p1) - logpdf(d1, p2)
+    end
+
+    return ratio
 end
 
 # Define the first step! function, which is called the 
@@ -69,7 +92,7 @@ function step!(
     θ = proposal(spl, model, θ_prev)
     
     # Calculate the log acceptance probability.
-    α = θ.lp - θ_prev.lp + q(spl, θ_prev, θ) - q(spl, θ, θ_prev)
+    α = θ.lp - θ_prev.lp + q(spl, θ_prev, θ)
 
     # Decide whether to return the previous θ or the new one.
     if log(rand()) < min(α, 0.0)
@@ -85,66 +108,34 @@ function assume(
     vn::VarName,
     vi::VarInfo
 )
-    # r = vi[vn] 
-    # if insupport(dist, r)
-    #     return r, logpdf(dist, r)
-    # else
-    #     return r, -Inf
-    # end
+    # Retrieve the current parameter value.
+    old_r = vi[vn]
 
-    r = rand(dist)
-    vi[vn] = [r]
-    return r, logpdf(dist, r)
+    # Generate a proposal value.
+    r = rand(spl.alg.proposal(vi[vn]))
 
-    # p = rand(Normal(r))
-    # if insupport(dist, p)
-    #     # println(r)
-    #     # println(p)
-    #     vi[vn] = [p]
-    #     return p, logpdf(dist, p)
-    # else
-    #     return r, logpdf(dist, r)
-    # end
-end
-
-# function assume(
-#     spl::Sampler{<:MetropolisHastings},
-#     dist::Vector{D},
-#     vn::VarName,
-#     vi::VarInfo
-# ) where {D<:Distribution}
-#     r = vi[vn]
-#     p = rand(Normal(r))
-#     if insupport(dist, r)
-#         return r, sum(logpdf.(dist, r))
-#     else
-#         return r, -Inf
-#     end
-# end
-
-function observe(spl::Sampler{<:MetropolisHastings}, d::Distribution, value::Any, vi::VarInfo)
-    return observe(nothing, d, value, vi)  # accumulate pdf of likelihood
-end
-
-function observe( spl::Sampler{<:MetropolisHastings},
-                  ds::Vector{D},
-                  value::Any,
-                  vi::VarInfo
-                )  where D<:Distribution
-    return observe(nothing, ds, value, vi) # accumulate pdf of likelihood
+    # Check if the proposal is in the distribution's support.
+    if insupport(dist, r)
+        # If the value is good, make sure to store it back in the VarInfo.
+        vi[vn] = [r]
+        return r, logpdf(dist, r)
+    else
+        # Otherwise return the previous value.
+        return old_r, logpdf(dist, old_r)
+    end
 end
 
 # Model declaration.
 @model gdemo(xs) = begin
-    μ ~ Normal(0, 1)
     σ ~ InverseGamma(2,3)
+    μ ~ Normal(0, sqrt(σ))
     for i in 1:length(xs)
         xs[i] ~ Normal(μ, σ)
     end
 end
 
 # Generate a set of data from the posterior we want to estimate.
-data = rand(Normal(5,3), 10)
+data = rand(Normal(5,3), 50)
 
 # Construct a DensityModel.
 model = gdemo(data)
@@ -153,4 +144,4 @@ model = gdemo(data)
 spl = MetropolisHastings()
 
 # Sample from the posterior.
-chain = sample(model, spl, 10000)
+chain = sample(model, spl, 100000)
